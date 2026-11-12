@@ -1,46 +1,43 @@
-# openWakeWord training config for the "Dangelmaier" wake word.
+# openWakeWord training config for the "Dinglemire" wake word (retrain v2).
 #
-# Run with:  python oww_train_shim.py --training_config dangelmaier.yaml \
+# Run with:  python oww_train_shim.py --training_config dinglemire.yaml \
 #                --generate_clips --augment_clips --train_model
 #
 # The shim (oww_train_shim.py, vendored from saintpete/openwakeword-colab-toolkit)
 # restores APIs removed in modern torchaudio/scipy/torch that speechbrain 0.5.14
 # and acoustics 0.2.6 still import.
 
-model_name: "dangelmaier_v1"
+# v2 replaces the old dinglemire_v1.tflite on the HA server (user reports the
+# old model may be undertrained).
+model_name: "dinglemire_v2"
 
-# Two phrases, one binary model — it activates on any of them.
-#  * "dangelmaier" — how an English TTS/reader says it (DAN-jil-MAY-er,
-#    espeak en-us: dˈændʒɪlmˌeɪəɚ).
-#  * "dangle myer" — the Polish/German reading "DANG-gel-MAI-er"
-#    (espeak en-us: dˈæŋɡəl mˈaɪɚ; hard g, "Mayer" ending).
-# n_samples is the TOTAL across all target phrases.
+# Single target phrase. espeak en-us renders "dinglemire" as
+# dˈɪŋɡəlmˌaɪɚ (DING-gul-MY-er) — 4 syllables, good length for a wake word.
 target_phrase:
-  - "dangelmaier"
-  - "dangle myer"
+  - "dinglemire"
 
 # Near-misses to train against, on top of the phoneme-overlap negatives
-# openWakeWord generates automatically. Each differs from a target by about
-# one phonetic feature.
+# openWakeWord generates automatically. Each differs from the target by about
+# one phonetic feature (vowel, onset or coda).
 custom_negative_phrases:
-  - "dinglemire"
-  - "danglemire"
-  - "tangle myer"
-  - "mangle myer"
-  - "danger myer"
-  - "dangle buyer"
-  - "dangle fire"
-  - "dangle liar"
-  - "Daniel myer"
-  - "dangle"
-  - "danger"
-  - "dandy"
+  - "dangle mire"
+  - "dangle myer"
+  - "dangle myra"
+  - "dingle fire"
+  - "dingle buyer"
+  - "dingle liar"
+  - "tingle mire"
+  - "tingle myer"
+  - "mingle mire"
+  - "mingle myer"
+  - "single mire"
+  - "jingle mire"
+  - "dingle"
+  - "mingle"
+  - "single"
 
-# CPU-budget sizing (GitHub Actions 4-core runner): total across phrases.
-# The upstream notebook demo uses 1000; the Clem kit recommends 20k+ for
-# short phrases. This phrase is long (~8-10 phonemes), so 6000 total
-# (3000/phrase) is a reasonable v1 baseline; retrain with more if recall
-# is weak.
+# CPU-budget sizing (GitHub Actions 4-core runner): all samples go to the
+# single phrase, giving better per-phrase density than the two-phrase run.
 n_samples: 6000
 n_samples_val: 600
 
@@ -56,7 +53,7 @@ augmentation_rounds: 2
 # that module at the top level.
 piper_sample_generator_path: "./piper-sample-generator"
 
-output_dir: "./dangelmaier_model"
+output_dir: "./dinglemire_model"
 
 rir_paths:
   - "./mit_rirs"

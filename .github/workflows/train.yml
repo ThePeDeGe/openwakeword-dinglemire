@@ -1,4 +1,4 @@
-name: Train dangelmaier wake word
+name: Train dinglemire wake word
 
 on:
   workflow_dispatch: {}
@@ -68,7 +68,7 @@ jobs:
           torch.load = lambda *a, **k: _o(*a, **{**k, "weights_only": False})
           from espeak_phonemizer import Phonemizer
           p = Phonemizer("en-us")
-          for phrase in ("dangelmaier", "dangle myer"):
+          for phrase in ("dinglemire",):
               ipa = p.phonemize(phrase)
               print(phrase, "->", ipa)
           torch.load("piper-sample-generator/models/en-us-libritts-high.pt", map_location="cpu")
@@ -79,20 +79,20 @@ jobs:
         run: python fetch_data.py
 
       - name: Stage config
-        run: cp config/dangelmaier.yaml dangelmaier.yaml
+        run: cp config/dinglemire.yaml dinglemire.yaml
 
       - name: Generate synthetic clips (resumable — retries continue the job)
         run: |
           for i in 1 2 3; do
             echo "=== generation attempt $i ==="
-            if python oww_train_shim.py --training_config dangelmaier.yaml --generate_clips; then
+            if python oww_train_shim.py --training_config dinglemire.yaml --generate_clips; then
               break
             fi
             echo "attempt $i failed; retrying (generation resumes from existing clips)"
           done
           python - <<'PY'
           import glob
-          n = len(glob.glob("dangelmaier_model/**/*.wav", recursive=True))
+          n = len(glob.glob("dinglemire_model/**/*.wav", recursive=True))
           print(f"generated clips so far: {n}")
           assert n >= 4000, f"only {n} clips generated after retries — aborting"
           PY
@@ -103,20 +103,20 @@ jobs:
           # would silently skip re-augmentation — clear stragglers first.
           python - <<'PY'
           import glob, os
-          feats = glob.glob("dangelmaier_model/dangelmaier_v1/*_features_*.npy")
+          feats = glob.glob("dinglemire_model/dangelmaier_v1/*_features_*.npy")
           if 0 < len(feats) < 4:
               for f in feats:
                   os.remove(f)
               print("cleared partial features:", feats)
           PY
-          python oww_train_shim.py --training_config dangelmaier.yaml --augment_clips
+          python oww_train_shim.py --training_config dinglemire.yaml --augment_clips
 
       - name: Train model
         run: |
           # Expected harmless error at the very end: the 0.6.0 train.py tries
           # a tflite conversion after writing the .onnx and fails without the
           # ancient onnx_tf toolchain (verified in the toolkit, 2026-08-01).
-          python oww_train_shim.py --training_config dangelmaier.yaml --train_model || true
+          python oww_train_shim.py --training_config dinglemire.yaml --train_model || true
 
       - name: Verify + score model
         run: python check_model.py
@@ -124,14 +124,14 @@ jobs:
       - name: Package
         run: |
           mkdir -p dist
-          find dangelmaier_model -name 'dangelmaier_v1*.onnx' -exec cp {} dist/ \;
-          find dangelmaier_model -name 'dangelmaier_v1*.tflite' -exec cp {} dist/ \; || true
-          find dangelmaier_model -maxdepth 3 -type d | sort
+          find dinglemire_model -name 'dinglemire_v2*.onnx' -exec cp {} dist/ \;
+          find dinglemire_model -name 'dinglemire_v2*.tflite' -exec cp {} dist/ \; || true
+          find dinglemire_model -maxdepth 3 -type d | sort
           ls -la dist/
           test -n "$(ls -A dist/)" || { echo "no model files staged"; exit 1; }
 
       - uses: actions/upload-artifact@v4
         with:
-          name: dangelmaier-model
+          name: dinglemire-model
           path: dist/
           if-no-files-found: error

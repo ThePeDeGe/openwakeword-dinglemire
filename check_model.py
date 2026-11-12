@@ -10,7 +10,7 @@ from pathlib import Path
 import numpy as np
 import scipy.io.wavfile
 
-MODEL_NAME = "dangelmaier_v1"
+MODEL_NAME = "dinglemire_v2"
 THRESHOLD = 0.5
 
 
@@ -19,7 +19,7 @@ def find_model():
     assert cands, (
         "No " + MODEL_NAME + " .onnx found. If the training step failed, its "
         "error is in the previous step. Contents of the model dir: "
-        + str(sorted(str(p) for p in Path("dangelmaier_model").glob("**/*"))[:80]))
+        + str(sorted(str(p) for p in Path("dinglemire_model").glob("**/*"))[:80]))
     return cands[0]
 
 
