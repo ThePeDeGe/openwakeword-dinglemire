@@ -8,6 +8,7 @@ on:
       - "fetch_data.py"
       - "check_model.py"
       - "oww_train_shim.py"
+      - ".github/workflows/**"
 
 jobs:
   train:
@@ -36,6 +37,9 @@ jobs:
       - name: Python dependencies (proven 2026 stack, see toolkit FINDINGS)
         run: |
           pip install -q --no-deps openwakeword==0.6.0
+          # setuptools>=80 dropped pkg_resources, which pronouncing 0.2.0
+          # imports at module load (openwakeword.data -> pronouncing)
+          pip install -q "setuptools<81"
           pip install -q onnxruntime onnxscript scikit-learn requests scipy tqdm soundfile
           pip install -q espeak-phonemizer
           pip install -q piper-phonemize-fix
