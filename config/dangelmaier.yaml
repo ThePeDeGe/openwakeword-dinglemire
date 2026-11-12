@@ -1,0 +1,92 @@
+# openWakeWord training config for the "Dangelmaier" wake word.
+#
+# Run with:  python oww_train_shim.py --training_config dangelmaier.yaml \
+#                --generate_clips --augment_clips --train_model
+#
+# The shim (oww_train_shim.py, vendored from saintpete/openwakeword-colab-toolkit)
+# restores APIs removed in modern torchaudio/scipy/torch that speechbrain 0.5.14
+# and acoustics 0.2.6 still import.
+
+model_name: "dangelmaier_v1"
+
+# Two phrases, one binary model — it activates on any of them.
+#  * "dangelmaier" — how an English TTS/reader says it (DAN-jil-MAY-er,
+#    espeak en-us: dˈændʒɪlmˌeɪəɚ).
+#  * "dangle myer" — the Polish/German reading "DANG-gel-MAI-er"
+#    (espeak en-us: dˈæŋɡəl mˈaɪɚ; hard g, "Mayer" ending).
+# n_samples is the TOTAL across all target phrases.
+target_phrase:
+  - "dangelmaier"
+  - "dangle myer"
+
+# Near-misses to train against, on top of the phoneme-overlap negatives
+# openWakeWord generates automatically. Each differs from a target by about
+# one phonetic feature.
+custom_negative_phrases:
+  - "dinglemire"
+  - "danglemire"
+  - "tangle myer"
+  - "mangle myer"
+  - "danger myer"
+  - "dangle buyer"
+  - "dangle fire"
+  - "dangle liar"
+  - "Daniel myer"
+  - "dangle"
+  - "danger"
+  - "dandy"
+
+# CPU-budget sizing (GitHub Actions 4-core runner): total across phrases.
+# The upstream notebook demo uses 1000; the Clem kit recommends 20k+ for
+# short phrases. This phrase is long (~8-10 phonemes), so 6000 total
+# (3000/phrase) is a reasonable v1 baseline; retrain with more if recall
+# is weak.
+n_samples: 6000
+n_samples_val: 600
+
+tts_batch_size: 50
+augmentation_batch_size: 16
+
+# Each generated clip is augmented twice — cheaper robustness than
+# generating twice as many clips.
+augmentation_rounds: 2
+
+# dscripka's fork, NOT rhasspy/piper-sample-generator: train.py does
+# `from generate_samples import generate_samples`, and only the fork has
+# that module at the top level.
+piper_sample_generator_path: "./piper-sample-generator"
+
+output_dir: "./dangelmaier_model"
+
+rir_paths:
+  - "./mit_rirs"
+
+# FMA music skipped for the CPU budget; AudioSet alone gives ~5.5 h of
+# varied backgrounds. Add "./fma" and fetch it if false positives on music
+# become a problem in practice.
+background_paths:
+  - "./audioset_16k"
+
+background_paths_duplication_rate:
+  - 1
+
+false_positive_validation_data_path: "./validation_set_features.npy"
+
+feature_data_files:
+  "ACAV100M_sample": "./openwakeword_features_ACAV100M_2000_hrs_16bit.npy"
+
+batch_n_per_class:
+  "ACAV100M_sample": 1024
+  "adversarial_negative": 50
+  "positive": 50
+
+model_type: "dnn"
+layer_size: 32
+
+# Reduced from the 50000 default to fit the 6 h GitHub Actions job limit
+# with margin; training stops early if the false-positive target is met.
+steps: 30000
+
+max_negative_weight: 1500
+
+target_false_positives_per_hour: 0.2

@@ -1,0 +1,133 @@
+name: Train dangelmaier wake word
+
+on:
+  workflow_dispatch: {}
+  push:
+    paths:
+      - "config/**"
+      - "fetch_data.py"
+      - "check_model.py"
+      - "oww_train_shim.py"
+
+jobs:
+  train:
+    runs-on: ubuntu-latest
+    timeout-minutes: 340
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Free disk space (needed for the 17.3 GB negative-features file)
+        run: |
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc \
+            /usr/local/.ghcup-library /usr/share/swift \
+            /opt/hostedtoolcache/CodeQL || true
+          sudo docker image prune -af >/dev/null 2>&1 || true
+          df -h /
+
+      - name: System dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq espeak-ng ffmpeg unzip
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Python dependencies (proven 2026 stack, see toolkit FINDINGS)
+        run: |
+          pip install -q --no-deps openwakeword==0.6.0
+          pip install -q onnxruntime onnxscript scikit-learn requests scipy tqdm soundfile
+          pip install -q espeak-phonemizer
+          pip install -q piper-phonemize-fix
+          pip install -q webrtcvad || pip install -q webrtcvad-wheels
+          pip install -q mutagen==1.47.0 torchinfo==1.8.0 torchmetrics==1.2.0 \
+            speechbrain==0.5.14 audiomentations==0.33.0 torch-audiomentations==0.11.0 \
+            acoustics==0.2.6 pronouncing==0.2.0 deep-phonemizer==0.0.19
+          pip install -q "datasets==2.21.0"
+
+      - name: Piper sample generator (dscripka fork) + voice checkpoint
+        run: |
+          git clone -q https://github.com/dscripka/piper-sample-generator
+          wget -q -O piper-sample-generator/models/en-us-libritts-high.pt \
+            https://github.com/rhasspy/piper-sample-generator/releases/download/v1.0.0/en-us-libritts-high.pt
+
+      - name: openWakeWord base models
+        run: python -c "import openwakeword.utils as u; u.download_models()"
+
+      - name: Preflight (phonemizer + voice checkpoint)
+        run: |
+          python - <<'PY'
+          import sys
+          sys.path.insert(0, "piper-sample-generator")
+          import torch
+          _o = torch.load
+          torch.load = lambda *a, **k: _o(*a, **{**k, "weights_only": False})
+          from espeak_phonemizer import Phonemizer
+          p = Phonemizer("en-us")
+          for phrase in ("dangelmaier", "dangle myer"):
+              ipa = p.phonemize(phrase)
+              print(phrase, "->", ipa)
+          torch.load("piper-sample-generator/models/en-us-libritts-high.pt", map_location="cpu")
+          print("PREFLIGHT OK: phonemizer + voice checkpoint load")
+          PY
+
+      - name: Download training data (MIT RIRs, AudioSet, negative features)
+        run: python fetch_data.py
+
+      - name: Stage config
+        run: cp config/dangelmaier.yaml dangelmaier.yaml
+
+      - name: Generate synthetic clips (resumable — retries continue the job)
+        run: |
+          for i in 1 2 3; do
+            echo "=== generation attempt $i ==="
+            if python oww_train_shim.py --training_config dangelmaier.yaml --generate_clips; then
+              break
+            fi
+            echo "attempt $i failed; retrying (generation resumes from existing clips)"
+          done
+          python - <<'PY'
+          import glob
+          n = len(glob.glob("dangelmaier_model/**/*.wav", recursive=True))
+          print(f"generated clips so far: {n}")
+          assert n >= 4000, f"only {n} clips generated after retries — aborting"
+          PY
+
+      - name: Augment clips
+        run: |
+          # A crashed augment leaves a PARTIAL features file whose existence
+          # would silently skip re-augmentation — clear stragglers first.
+          python - <<'PY'
+          import glob, os
+          feats = glob.glob("dangelmaier_model/dangelmaier_v1/*_features_*.npy")
+          if 0 < len(feats) < 4:
+              for f in feats:
+                  os.remove(f)
+              print("cleared partial features:", feats)
+          PY
+          python oww_train_shim.py --training_config dangelmaier.yaml --augment_clips
+
+      - name: Train model
+        run: |
+          # Expected harmless error at the very end: the 0.6.0 train.py tries
+          # a tflite conversion after writing the .onnx and fails without the
+          # ancient onnx_tf toolchain (verified in the toolkit, 2026-08-01).
+          python oww_train_shim.py --training_config dangelmaier.yaml --train_model || true
+
+      - name: Verify + score model
+        run: python check_model.py
+
+      - name: Package
+        run: |
+          mkdir -p dist
+          find dangelmaier_model -name 'dangelmaier_v1*.onnx' -exec cp {} dist/ \;
+          find dangelmaier_model -name 'dangelmaier_v1*.tflite' -exec cp {} dist/ \; || true
+          find dangelmaier_model -maxdepth 3 -type d | sort
+          ls -la dist/
+          test -n "$(ls -A dist/)" || { echo "no model files staged"; exit 1; }
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dangelmaier-model
+          path: dist/
+          if-no-files-found: error
