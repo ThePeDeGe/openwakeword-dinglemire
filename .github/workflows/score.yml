@@ -20,6 +20,7 @@ jobs:
           pip install -q onnxruntime scikit-learn requests scipy tqdm soundfile
           pip install -q piper-phonemize-fix
           pip install -q "setuptools<81"
+          pip install -q webrtcvad || pip install -q webrtcvad-wheels
           git clone -q https://github.com/dscripka/piper-sample-generator
           wget -q -O piper-sample-generator/models/en-us-libritts-high.pt \
             https://github.com/rhasspy/piper-sample-generator/releases/download/v1.0.0/en-us-libritts-high.pt
