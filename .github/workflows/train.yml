@@ -8,7 +8,6 @@ on:
       - "fetch_data.py"
       - "check_model.py"
       - "oww_train_shim.py"
-      - ".github/workflows/**"
 
 jobs:
   train:
