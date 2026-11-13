@@ -16,6 +16,7 @@ jobs:
 
       - name: Deps
         run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq espeak-ng
           pip install -q --no-deps openwakeword==0.6.0
           pip install -q onnxruntime scikit-learn requests scipy tqdm soundfile
           pip install -q piper-phonemize-fix espeak-phonemizer
