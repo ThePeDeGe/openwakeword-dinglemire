@@ -33,6 +33,9 @@ jobs:
       - name: Restore features cache (for melspec/embedding? not needed)
         run: echo "not needed for generation"
 
+      - name: openWakeWord base models
+        run: python -c "import openwakeword.utils as u; u.download_models()"
+
       - name: Generate 50 fresh positive clips of "dinglemire"
         run: |
           python - <<'PY'
