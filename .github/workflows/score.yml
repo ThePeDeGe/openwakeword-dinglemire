@@ -1,0 +1,76 @@
+name: Score dinglemire_v2 on synthetic positives
+
+on:
+  workflow_dispatch: {}
+
+jobs:
+  score:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Deps
+        run: |
+          pip install -q --no-deps openwakeword==0.6.0
+          pip install -q onnxruntime scikit-learn requests scipy tqdm soundfile
+          pip install -q piper-phonemize-fix
+          pip install -q "setuptools<81"
+          git clone -q https://github.com/dscripka/piper-sample-generator
+          wget -q -O piper-sample-generator/models/en-us-libritts-high.pt \
+            https://github.com/rhasspy/piper-sample-generator/releases/download/v1.0.0/en-us-libritts-high.pt
+          wget -q "https://web.archive.org/web/20260524111114id_/https://public-asai-dl-models.s3.eu-central-1.amazonaws.com/DeepPhonemizer/en_us_cmudict_forward.pt" \
+            -O piper-sample-generator/en_us_cmudict_forward.pt
+
+      - name: Restore features cache (for melspec/embedding? not needed)
+        run: echo "not needed for generation"
+
+      - name: Generate 50 fresh positive clips of "dinglemire"
+        run: |
+          python - <<'PY'
+          import sys
+          sys.path.insert(0, "piper-sample-generator")
+          from generate_samples import generate_samples
+          generate_samples(text=["dinglemire"], max_samples=50, batch_size=25,
+                           noise_scales=[1.0], noise_scale_ws=[1.0],
+                           length_scales=[0.85, 1.0, 1.15],
+                           output_dir="./pos_clips")
+          print("generated 50 clips")
+          PY
+
+      - name: Score model on clips (threshold sweep)
+        run: |
+          python - <<'PY'
+          import glob, json
+          import numpy as np
+          import scipy.io.wavfile
+          from openwakeword.model import Model
+          m = Model(wakeword_models=["dinglemire_v2.onnx"]) if glob.glob("dinglemire_v2.onnx") else None
+          import urllib.request, zipfile, io, os
+          if m is None:
+              print("download model from release/artifact not available in-script")
+              raise SystemExit(1)
+          peaks = []
+          for wav in sorted(glob.glob("pos_clips/**/*.wav", recursive=True)):
+              sr, a = scipy.io.wavfile.read(wav)
+              m.reset()
+              peak = 0.0
+              for i in range(0, len(a)-1280, 1280):
+                  p = m.predict(np.int16(a[i:i+1280]))
+                  peak = max(peak, max(p.values()))
+              peaks.append(peak)
+          peaks = np.array(peaks)
+          print(json.dumps({
+              "n": len(peaks),
+              "median": float(np.median(peaks)),
+              "p25": float(np.percentile(peaks, 25)),
+              "p75": float(np.percentile(peaks, 75)),
+              "recall@0.5": float((peaks >= 0.5).mean()),
+              "recall@0.3": float((peaks >= 0.3).mean()),
+              "recall@0.2": float((peaks >= 0.2).mean()),
+          }, indent=1))
+          PY
