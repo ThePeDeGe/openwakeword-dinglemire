@@ -58,6 +58,35 @@ jobs:
       - name: openWakeWord base models
         run: python -c "import openwakeword.utils as u; u.download_models()"
 
+      - name: Prefetch DeepPhonemizer checkpoint (upstream S3 bucket returns 403 since 2026-11)
+        run: |
+          RES=$(python -c "import openwakeword, os; print(os.path.join(os.path.dirname(openwakeword.__file__), 'resources'))")
+          mkdir -p "$RES"
+          wget -q "https://web.archive.org/web/20260524111114id_/https://public-asai-dl-models.s3.eu-central-1.amazonaws.com/DeepPhonemizer/en_us_cmudict_forward.pt" \
+            -O "$RES/en_us_cmudict_forward.pt"
+          python - <<'PY'
+          import os, torch, openwakeword
+          p = os.path.join(os.path.dirname(openwakeword.__file__), 'resources', 'en_us_cmudict_forward.pt')
+          with open(p, 'rb') as f:
+              magic = f.read(4)
+          assert magic[:2] == b'PK', f'checkpoint is not a torch zip file: {magic!r}'
+          _orig = torch.load
+          torch.load = lambda *a, **k: _orig(*a, **{**k, 'weights_only': False})
+          from dp.phonemizer import Phonemizer
+          ph = Phonemizer.from_checkpoint(p)
+          print('phonemize check:', ph('dinglemire', lang='en_us'))
+          print('PREFETCH OK ({} MB)'.format(round(os.path.getsize(p)/1e6)))
+          PY
+
+      - name: Restore generated clips/features cache
+        uses: actions/cache/restore@v4
+        with:
+          path: dinglemire_model
+          key: ow-clips-${{ runner.os }}-${{ hashFiles('config/dinglemire.yaml') }}
+          restore-keys: |
+            ow-clips-${{ runner.os }}-
+            ow-clips-
+
       - name: Preflight (phonemizer + voice checkpoint)
         run: |
           python - <<'PY'
@@ -97,6 +126,13 @@ jobs:
           assert n >= 4000, f"only {n} clips generated after retries — aborting"
           PY
 
+      - name: Save generated clips cache
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: dinglemire_model
+          key: ow-clips-${{ runner.os }}-gen-${{ github.run_id }}
+
       - name: Augment clips
         run: |
           # A crashed augment leaves a PARTIAL features file whose existence
@@ -110,6 +146,13 @@ jobs:
               print("cleared partial features:", feats)
           PY
           python oww_train_shim.py --training_config dinglemire.yaml --augment_clips
+
+      - name: Save augmented features cache
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: dinglemire_model
+          key: ow-clips-${{ runner.os }}-aug-${{ github.run_id }}
 
       - name: Train model
         run: |
