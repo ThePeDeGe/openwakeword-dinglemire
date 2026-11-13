@@ -167,7 +167,7 @@ jobs:
       - name: Package
         run: |
           mkdir -p dist
-          find dinglemire_model -name 'dinglemire_v2*.onnx' -exec cp {} dist/ \;
+          find dinglemire_model -name 'dinglemire_v2*.onnx*' -exec cp {} dist/ \;
           find dinglemire_model -name 'dinglemire_v2*.tflite' -exec cp {} dist/ \; || true
           find dinglemire_model -maxdepth 3 -type d | sort
           ls -la dist/
