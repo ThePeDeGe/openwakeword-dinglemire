@@ -18,7 +18,7 @@ jobs:
         run: |
           pip install -q --no-deps openwakeword==0.6.0
           pip install -q onnxruntime scikit-learn requests scipy tqdm soundfile
-          pip install -q piper-phonemize-fix
+          pip install -q piper-phonemize-fix espeak-phonemizer
           pip install -q "setuptools<81"
           pip install -q webrtcvad || pip install -q webrtcvad-wheels
           pip install -q torch --index-url https://download.pytorch.org/whl/cpu
