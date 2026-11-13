@@ -37,6 +37,9 @@ jobs:
           python - <<'PY'
           import sys
           sys.path.insert(0, "piper-sample-generator")
+          import torch
+          _orig = torch.load
+          torch.load = lambda *a, **k: _orig(*a, **{**k, "weights_only": False})
           from generate_samples import generate_samples
           generate_samples(text=["dinglemire"], max_samples=50, batch_size=25,
                            noise_scales=[1.0], noise_scale_ws=[1.0],
