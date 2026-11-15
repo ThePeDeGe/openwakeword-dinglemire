@@ -38,15 +38,16 @@ jobs:
             "audiomentations" "webrtcvad-wheels" "scikit-learn" "requests"
           pip install -q pymicro-features
           pip install -q "git+https://github.com/whatsnowplaying/audio-metadata@d4ebb238e6a401bb1a5aaaac60c9e2b3cb30929f"
+          pip install -q torch torchaudio --index-url https://download.pytorch.org/whl/cpu
           git clone -q https://github.com/kahrendt/microWakeWord
           pip install -q -e ./microWakeWord
 
-      - name: Piper sample generator + voice checkpoint
+      - name: Piper sample generator (kahrendt fork, rhasspy upstream lost generate_samples.py) + voice checkpoint
         run: |
-          git clone -q https://github.com/rhasspy/piper-sample-generator
+          git clone -q https://github.com/kahrendt/piper-sample-generator
           wget -q -O piper-sample-generator/models/en_US-libritts_r-medium.pt \
             https://github.com/rhasspy/piper-sample-generator/releases/download/v2.0.0/en_US-libritts_r-medium.pt
-          pip install -q piper-phonemize
+          pip install -q piper-phonemize-cross==1.2.1
 
       - name: Restore MWW cache (samples/features)
         uses: actions/cache/restore@v4
