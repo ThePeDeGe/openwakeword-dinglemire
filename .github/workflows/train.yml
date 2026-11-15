@@ -1,179 +1,132 @@
 name: Train dinglemire wake word
-
-on:
+true:
   workflow_dispatch: {}
-  push:
-    paths:
-      - "config/**"
-      - "fetch_data.py"
-      - "check_model.py"
-      - "oww_train_shim.py"
-
 jobs:
   train:
     runs-on: ubuntu-latest
     timeout-minutes: 340
     steps:
-      - uses: actions/checkout@v4
+    - uses: actions/checkout@v4
+    - name: Free disk space (needed for the 17.3 GB negative-features file)
+      run: "sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc \\\n  /usr/local/.ghcup-library\
+        \ /usr/share/swift \\\n  /opt/hostedtoolcache/CodeQL || true\nsudo docker\
+        \ image prune -af >/dev/null 2>&1 || true\ndf -h /\n"
+    - name: System dependencies
+      run: 'sudo apt-get update -qq
 
-      - name: Free disk space (needed for the 17.3 GB negative-features file)
-        run: |
-          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc \
-            /usr/local/.ghcup-library /usr/share/swift \
-            /opt/hostedtoolcache/CodeQL || true
-          sudo docker image prune -af >/dev/null 2>&1 || true
-          df -h /
+        sudo apt-get install -y -qq espeak-ng ffmpeg unzip
 
-      - name: System dependencies
-        run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq espeak-ng ffmpeg unzip
+        '
+    - uses: actions/setup-python@v5
+      with:
+        python-version: '3.12'
+    - name: Python dependencies (proven 2026 stack, see toolkit FINDINGS)
+      run: "pip install -q --no-deps openwakeword==0.6.0\n# setuptools>=80 dropped\
+        \ pkg_resources, which pronouncing 0.2.0\n# imports at module load (openwakeword.data\
+        \ -> pronouncing)\npip install -q \"setuptools<81\"\npip install -q onnxruntime\
+        \ onnxscript scikit-learn requests scipy tqdm soundfile\npip install -q espeak-phonemizer\n\
+        pip install -q piper-phonemize-fix\npip install -q webrtcvad || pip install\
+        \ -q webrtcvad-wheels\npip install -q mutagen==1.47.0 torchinfo==1.8.0 torchmetrics==1.2.0\
+        \ \\\n  speechbrain==0.5.14 audiomentations==0.33.0 torch-audiomentations==0.11.0\
+        \ \\\n  acoustics==0.2.6 pronouncing==0.2.0 deep-phonemizer==0.0.19\npip install\
+        \ -q \"datasets==2.21.0\"\n"
+    - name: Piper sample generator (dscripka fork) + voice checkpoint
+      run: "git clone -q https://github.com/dscripka/piper-sample-generator\nwget\
+        \ -q -O piper-sample-generator/models/en-us-libritts-high.pt \\\n  https://github.com/rhasspy/piper-sample-generator/releases/download/v1.0.0/en-us-libritts-high.pt\n"
+    - name: openWakeWord base models
+      run: python -c "import openwakeword.utils as u; u.download_models()"
+    - name: Prefetch DeepPhonemizer checkpoint (upstream S3 bucket returns 403 since
+        2026-11)
+      run: "RES=$(python -c \"import openwakeword, os; print(os.path.join(os.path.dirname(openwakeword.__file__),\
+        \ 'resources'))\")\nmkdir -p \"$RES\"\nwget -q \"https://web.archive.org/web/20260524111114id_/https://public-asai-dl-models.s3.eu-central-1.amazonaws.com/DeepPhonemizer/en_us_cmudict_forward.pt\"\
+        \ \\\n  -O \"$RES/en_us_cmudict_forward.pt\"\npython - <<'PY'\nimport os,\
+        \ torch, openwakeword\np = os.path.join(os.path.dirname(openwakeword.__file__),\
+        \ 'resources', 'en_us_cmudict_forward.pt')\nwith open(p, 'rb') as f:\n   \
+        \ magic = f.read(4)\nassert magic[:2] == b'PK', f'checkpoint is not a torch\
+        \ zip file: {magic!r}'\n_orig = torch.load\ntorch.load = lambda *a, **k: _orig(*a,\
+        \ **{**k, 'weights_only': False})\nfrom dp.phonemizer import Phonemizer\n\
+        ph = Phonemizer.from_checkpoint(p)\nprint('phonemize check:', ph('dinglemire',\
+        \ lang='en_us'))\nprint('PREFETCH OK ({} MB)'.format(round(os.path.getsize(p)/1e6)))\n\
+        PY\n"
+    - name: Restore generated clips/features cache
+      uses: actions/cache/restore@v4
+      with:
+        path: dinglemire_model
+        key: ow-clips-${{ runner.os }}-${{ hashFiles('config/dinglemire.yaml') }}
+        restore-keys: 'ow-clips-${{ runner.os }}-
 
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
+          ow-clips-
 
-      - name: Python dependencies (proven 2026 stack, see toolkit FINDINGS)
-        run: |
-          pip install -q --no-deps openwakeword==0.6.0
-          # setuptools>=80 dropped pkg_resources, which pronouncing 0.2.0
-          # imports at module load (openwakeword.data -> pronouncing)
-          pip install -q "setuptools<81"
-          pip install -q onnxruntime onnxscript scikit-learn requests scipy tqdm soundfile
-          pip install -q espeak-phonemizer
-          pip install -q piper-phonemize-fix
-          pip install -q webrtcvad || pip install -q webrtcvad-wheels
-          pip install -q mutagen==1.47.0 torchinfo==1.8.0 torchmetrics==1.2.0 \
-            speechbrain==0.5.14 audiomentations==0.33.0 torch-audiomentations==0.11.0 \
-            acoustics==0.2.6 pronouncing==0.2.0 deep-phonemizer==0.0.19
-          pip install -q "datasets==2.21.0"
+          '
+    - name: Preflight (phonemizer + voice checkpoint)
+      run: "python - <<'PY'\nimport sys\nsys.path.insert(0, \"piper-sample-generator\"\
+        )\nimport torch\n_o = torch.load\ntorch.load = lambda *a, **k: _o(*a, **{**k,\
+        \ \"weights_only\": False})\nfrom espeak_phonemizer import Phonemizer\np =\
+        \ Phonemizer(\"en-us\")\nfor phrase in (\"dinglemire\",):\n    ipa = p.phonemize(phrase)\n\
+        \    print(phrase, \"->\", ipa)\ntorch.load(\"piper-sample-generator/models/en-us-libritts-high.pt\"\
+        , map_location=\"cpu\")\nprint(\"PREFLIGHT OK: phonemizer + voice checkpoint\
+        \ load\")\nPY\n"
+    - name: Download training data (MIT RIRs, AudioSet, negative features)
+      run: python fetch_data.py
+    - name: Stage config
+      run: cp config/dinglemire.yaml dinglemire.yaml
+    - name: "Generate synthetic clips (resumable \u2014 retries continue the job)"
+      run: "for i in 1 2 3; do\n  echo \"=== generation attempt $i ===\"\n  if python\
+        \ oww_train_shim.py --training_config dinglemire.yaml --generate_clips; then\n\
+        \    break\n  fi\n  echo \"attempt $i failed; retrying (generation resumes\
+        \ from existing clips)\"\ndone\npython - <<'PY'\nimport glob\nn = len(glob.glob(\"\
+        dinglemire_model/**/*.wav\", recursive=True))\nprint(f\"generated clips so\
+        \ far: {n}\")\nassert n >= 4000, f\"only {n} clips generated after retries\
+        \ \u2014 aborting\"\nPY\n"
+    - name: Save generated clips cache
+      if: always()
+      uses: actions/cache/save@v4
+      with:
+        path: dinglemire_model
+        key: ow-clips-${{ runner.os }}-gen-${{ github.run_id }}
+    - name: Augment clips
+      run: "# A crashed augment leaves a PARTIAL features file whose existence\n#\
+        \ would silently skip re-augmentation \u2014 clear stragglers first.\npython\
+        \ - <<'PY'\nimport glob, os\nfeats = glob.glob(\"dinglemire_model/dangelmaier_v1/*_features_*.npy\"\
+        )\nif 0 < len(feats) < 4:\n    for f in feats:\n        os.remove(f)\n   \
+        \ print(\"cleared partial features:\", feats)\nPY\npython oww_train_shim.py\
+        \ --training_config dinglemire.yaml --augment_clips\n"
+    - name: Save augmented features cache
+      if: always()
+      uses: actions/cache/save@v4
+      with:
+        path: dinglemire_model
+        key: ow-clips-${{ runner.os }}-aug-${{ github.run_id }}
+    - name: Train model
+      run: '# Expected harmless error at the very end: the 0.6.0 train.py tries
 
-      - name: Piper sample generator (dscripka fork) + voice checkpoint
-        run: |
-          git clone -q https://github.com/dscripka/piper-sample-generator
-          wget -q -O piper-sample-generator/models/en-us-libritts-high.pt \
-            https://github.com/rhasspy/piper-sample-generator/releases/download/v1.0.0/en-us-libritts-high.pt
+        # a tflite conversion after writing the .onnx and fails without the
 
-      - name: openWakeWord base models
-        run: python -c "import openwakeword.utils as u; u.download_models()"
+        # ancient onnx_tf toolchain (verified in the toolkit, 2026-08-01).
 
-      - name: Prefetch DeepPhonemizer checkpoint (upstream S3 bucket returns 403 since 2026-11)
-        run: |
-          RES=$(python -c "import openwakeword, os; print(os.path.join(os.path.dirname(openwakeword.__file__), 'resources'))")
-          mkdir -p "$RES"
-          wget -q "https://web.archive.org/web/20260524111114id_/https://public-asai-dl-models.s3.eu-central-1.amazonaws.com/DeepPhonemizer/en_us_cmudict_forward.pt" \
-            -O "$RES/en_us_cmudict_forward.pt"
-          python - <<'PY'
-          import os, torch, openwakeword
-          p = os.path.join(os.path.dirname(openwakeword.__file__), 'resources', 'en_us_cmudict_forward.pt')
-          with open(p, 'rb') as f:
-              magic = f.read(4)
-          assert magic[:2] == b'PK', f'checkpoint is not a torch zip file: {magic!r}'
-          _orig = torch.load
-          torch.load = lambda *a, **k: _orig(*a, **{**k, 'weights_only': False})
-          from dp.phonemizer import Phonemizer
-          ph = Phonemizer.from_checkpoint(p)
-          print('phonemize check:', ph('dinglemire', lang='en_us'))
-          print('PREFETCH OK ({} MB)'.format(round(os.path.getsize(p)/1e6)))
-          PY
+        python oww_train_shim.py --training_config dinglemire.yaml --train_model ||
+        true
 
-      - name: Restore generated clips/features cache
-        uses: actions/cache/restore@v4
-        with:
-          path: dinglemire_model
-          key: ow-clips-${{ runner.os }}-${{ hashFiles('config/dinglemire.yaml') }}
-          restore-keys: |
-            ow-clips-${{ runner.os }}-
-            ow-clips-
+        '
+    - name: Verify + score model
+      run: python check_model.py
+    - name: Package
+      run: 'mkdir -p dist
 
-      - name: Preflight (phonemizer + voice checkpoint)
-        run: |
-          python - <<'PY'
-          import sys
-          sys.path.insert(0, "piper-sample-generator")
-          import torch
-          _o = torch.load
-          torch.load = lambda *a, **k: _o(*a, **{**k, "weights_only": False})
-          from espeak_phonemizer import Phonemizer
-          p = Phonemizer("en-us")
-          for phrase in ("dinglemire",):
-              ipa = p.phonemize(phrase)
-              print(phrase, "->", ipa)
-          torch.load("piper-sample-generator/models/en-us-libritts-high.pt", map_location="cpu")
-          print("PREFLIGHT OK: phonemizer + voice checkpoint load")
-          PY
+        find dinglemire_model -name ''dinglemire_v2*.onnx*'' -exec cp {} dist/ \;
 
-      - name: Download training data (MIT RIRs, AudioSet, negative features)
-        run: python fetch_data.py
+        find dinglemire_model -name ''dinglemire_v2*.tflite'' -exec cp {} dist/ \;
+        || true
 
-      - name: Stage config
-        run: cp config/dinglemire.yaml dinglemire.yaml
+        find dinglemire_model -maxdepth 3 -type d | sort
 
-      - name: Generate synthetic clips (resumable — retries continue the job)
-        run: |
-          for i in 1 2 3; do
-            echo "=== generation attempt $i ==="
-            if python oww_train_shim.py --training_config dinglemire.yaml --generate_clips; then
-              break
-            fi
-            echo "attempt $i failed; retrying (generation resumes from existing clips)"
-          done
-          python - <<'PY'
-          import glob
-          n = len(glob.glob("dinglemire_model/**/*.wav", recursive=True))
-          print(f"generated clips so far: {n}")
-          assert n >= 4000, f"only {n} clips generated after retries — aborting"
-          PY
+        ls -la dist/
 
-      - name: Save generated clips cache
-        if: always()
-        uses: actions/cache/save@v4
-        with:
-          path: dinglemire_model
-          key: ow-clips-${{ runner.os }}-gen-${{ github.run_id }}
+        test -n "$(ls -A dist/)" || { echo "no model files staged"; exit 1; }
 
-      - name: Augment clips
-        run: |
-          # A crashed augment leaves a PARTIAL features file whose existence
-          # would silently skip re-augmentation — clear stragglers first.
-          python - <<'PY'
-          import glob, os
-          feats = glob.glob("dinglemire_model/dangelmaier_v1/*_features_*.npy")
-          if 0 < len(feats) < 4:
-              for f in feats:
-                  os.remove(f)
-              print("cleared partial features:", feats)
-          PY
-          python oww_train_shim.py --training_config dinglemire.yaml --augment_clips
-
-      - name: Save augmented features cache
-        if: always()
-        uses: actions/cache/save@v4
-        with:
-          path: dinglemire_model
-          key: ow-clips-${{ runner.os }}-aug-${{ github.run_id }}
-
-      - name: Train model
-        run: |
-          # Expected harmless error at the very end: the 0.6.0 train.py tries
-          # a tflite conversion after writing the .onnx and fails without the
-          # ancient onnx_tf toolchain (verified in the toolkit, 2026-08-01).
-          python oww_train_shim.py --training_config dinglemire.yaml --train_model || true
-
-      - name: Verify + score model
-        run: python check_model.py
-
-      - name: Package
-        run: |
-          mkdir -p dist
-          find dinglemire_model -name 'dinglemire_v2*.onnx*' -exec cp {} dist/ \;
-          find dinglemire_model -name 'dinglemire_v2*.tflite' -exec cp {} dist/ \; || true
-          find dinglemire_model -maxdepth 3 -type d | sort
-          ls -la dist/
-          test -n "$(ls -A dist/)" || { echo "no model files staged"; exit 1; }
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: dinglemire-model
-          path: dist/
-          if-no-files-found: error
+        '
+    - uses: actions/upload-artifact@v4
+      with:
+        name: dinglemire-model
+        path: dist/
+        if-no-files-found: error
