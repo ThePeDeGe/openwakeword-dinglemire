@@ -51,5 +51,5 @@ eval_step_interval: 500
 clip_duration_ms: 1500
 
 target_minimization: 0.9
-minimization_metric: None
+minimization_metric: null
 maximization_metric: "average_viable_recall"
