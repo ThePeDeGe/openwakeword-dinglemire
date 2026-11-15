@@ -1,0 +1,201 @@
+name: Train microWakeWord dinglemire (Voice PE on-device)
+
+on:
+  workflow_dispatch: {}
+  push:
+    paths:
+      - "config/dinglemire_mww.yaml"
+      - "fetch_data.py"
+
+jobs:
+  train-mww:
+    runs-on: ubuntu-latest
+    timeout-minutes: 340
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc \
+            /usr/local/.ghcup-library /usr/share/swift \
+            /opt/hostedtoolcache/CodeQL || true
+          sudo docker image prune -af >/dev/null 2>&1 || true
+          df -h /
+
+      - name: System dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq espeak-ng ffmpeg unzip
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      - name: Python dependencies (microWakeWord stack, python 3.10)
+        run: |
+          pip install -q "numpy>=2.0" "tensorflow>=2.18" "ai-edge-litert" \
+            "datasets==2.21.0" "scipy" "tqdm" "soundfile" "pyyaml" "mmap_ninja" \
+            "audiomentations" "webrtcvad-wheels" "scikit-learn" "requests"
+          pip install -q pymicro-features
+          pip install -q "git+https://github.com/whatsnowplaying/audio-metadata@d4ebb238e6a401bb1a5aaaac60c9e2b3cb30929f"
+          git clone -q https://github.com/kahrendt/microWakeWord
+          pip install -q -e ./microWakeWord
+
+      - name: Piper sample generator + voice checkpoint
+        run: |
+          git clone -q https://github.com/rhasspy/piper-sample-generator
+          wget -q -O piper-sample-generator/models/en_US-libritts_r-medium.pt \
+            https://github.com/rhasspy/piper-sample-generator/releases/download/v2.0.0/en_US-libritts_r-medium.pt
+          pip install -q piper-phonemize
+
+      - name: Restore MWW cache (samples/features)
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            generated_samples
+            generated_augmented_features
+          key: mww-${{ runner.os }}-${{ hashFiles('config/dinglemire_mww.yaml') }}
+          restore-keys: |
+            mww-${{ runner.os }}-
+
+      - name: Generate 3000 synthetic "dinglemire" clips
+        run: |
+          python piper-sample-generator/generate_samples.py "dinglemire" \
+            --max-samples 3000 --batch-size 50 \
+            --output-dir generated_samples 2>&1 | tail -3
+          N=$(ls generated_samples | wc -l)
+          echo "generated: $N"
+          test "$N" -ge 2800 || { echo "too few samples"; exit 1; }
+
+      - name: Save samples cache
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: generated_samples
+          key: mww-${{ runner.os }}-samples-${{ github.run_id }}
+
+      - name: Download background audio (MIT RIRs + AudioSet 16k)
+        run: python fetch_data.py
+
+      - name: Save background cache
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            mit_rirs
+            audioset_16k
+          key: mww-${{ runner.os }}-bg-${{ github.run_id }}
+
+      - name: Augment + spectrogram features (RaggedMmap)
+        run: |
+          python - <<'PY'
+          from microwakeword.audio.augmentation import Augmentation
+          from microwakeword.audio.clips import Clips
+          from microwakeword.audio.spectrograms import SpectrogramGeneration
+          from mmap_ninja.ragged import RaggedMmap
+          import os
+
+          clips = Clips(input_directory='generated_samples',
+                        file_pattern='*.wav',
+                        max_clip_duration_s=None,
+                        remove_silence=False,
+                        random_split_seed=10,
+                        split_count=0.1)
+          augmenter = Augmentation(augmentation_duration_s=3.2,
+                         augmentation_probabilities={
+                              "SevenBandParametricEQ": 0.1,
+                              "TanhDistortion": 0.1,
+                              "PitchShift": 0.1,
+                              "BandStopFilter": 0.1,
+                              "AddColorNoise": 0.1,
+                              "AddBackgroundNoise": 0.75,
+                              "Gain": 1.0,
+                              "RIR": 0.5,
+                          },
+                         impulse_paths=['mit_rirs'],
+                         background_paths=['audioset_16k'],
+                         background_min_snr_db=-5,
+                         background_max_snr_db=10,
+                         min_jitter_s=0.195,
+                         max_jitter_s=0.205)
+
+          output_dir = 'generated_augmented_features'
+          os.makedirs(output_dir, exist_ok=True)
+          for split in ["training", "validation", "testing"]:
+              out_dir = os.path.join(output_dir, split)
+              os.makedirs(out_dir, exist_ok=True)
+              split_name = "train"; repetition = 2
+              slide = 10
+              if split == "validation":
+                  split_name = "validation"; repetition = 1
+              elif split == "testing":
+                  split_name = "test"; repetition = 1; slide = 1
+              spectrograms = SpectrogramGeneration(clips=clips,
+                                                   augmenter=augmenter,
+                                                   slide_frames=slide,
+                                                   step_ms=10)
+              RaggedMmap.from_generator(
+                  out_dir=os.path.join(out_dir, 'wakeword_mmap'),
+                  sample_generator=spectrograms.spectrogram_generator(split=split_name, repeat=repetition),
+                  batch_size=100,
+                  verbose=True)
+          print("features done")
+          PY
+
+      - name: Save features cache
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: generated_augmented_features
+          key: mww-${{ runner.os }}-features-${{ github.run_id }}
+
+      - name: Download pre-generated negative spectrogram datasets
+        run: |
+          mkdir -p negative_datasets
+          for fname in dinner_party.zip dinner_party_eval.zip no_speech.zip speech.zip; do
+            wget -q -O "negative_datasets/$fname" \
+              "https://huggingface.co/datasets/kahrendt/microwakeword/resolve/main/$fname"
+            unzip -q "negative_datasets/$fname" -d negative_datasets
+          done
+          ls negative_datasets/
+
+      - name: Stage training config
+        run: cp config/dinglemire_mww.yaml training_parameters.yaml
+
+      - name: Train microWakeWord (mixednet, streaming quantized tflite)
+        run: |
+          set -o pipefail
+          python -m microwakeword.model_train_eval \
+            --training_config='training_parameters.yaml' \
+            --train 1 \
+            --restore_checkpoint 1 \
+            --test_tf_nonstreaming 0 \
+            --test_tflite_nonstreaming 0 \
+            --test_tflite_nonstreaming_quantized 0 \
+            --test_tflite_streaming 0 \
+            --test_tflite_streaming_quantized 1 \
+            --use_weights "best_weights" \
+            mixednet \
+            --pointwise_filters "64,64,64,64" \
+            --repeat_in_block  "1, 1, 1, 1" \
+            --mixconv_kernel_sizes '[5], [7,11], [9,15], [23]' \
+            --residual_connection "0,0,0,0" \
+            --first_conv_filters 32 \
+            --first_conv_kernel_size 5 \
+            --stride 3 2>&1 | tee train_log.txt | grep -viE '^\s*$' | tail -40
+          grep -iE 'arena|tensor arena' train_log.txt || true
+
+      - name: Package model + JSON config
+        run: |
+          TFL=$(find trained_models -name 'stream_state_internal_quant.tflite' | head -1)
+          test -n "$TFL" || { echo "no tflite produced"; find trained_models -type f | head -20; exit 1; }
+          cp "$TFL" dinglemire.tflite
+          mkdir -p dist
+          cp dinglemire.tflite dist/
+          ls -la dist/
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dinglemire-mww
+          path: dist/
+          if-no-files-found: error
