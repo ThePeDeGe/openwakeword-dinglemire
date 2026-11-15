@@ -1,5 +1,5 @@
 name: Train dinglemire wake word
-true:
+on:
   workflow_dispatch: {}
 jobs:
   train:
