@@ -61,7 +61,7 @@ jobs:
 
       - name: Generate 3000 synthetic "dinglemire" clips
         run: |
-          python mww_torch_shim.py piper-sample-generator/generate_samples.py "dinglemire" \
+          PYTHONPATH=piper-sample-generator python mww_torch_shim.py piper-sample-generator/generate_samples.py "dinglemire" \
             --max-samples 3000 --batch-size 50 \
             --output-dir generated_samples 2>&1 | tail -3
           N=$(ls generated_samples | wc -l)
