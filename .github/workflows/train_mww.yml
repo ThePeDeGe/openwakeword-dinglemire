@@ -33,7 +33,7 @@ jobs:
 
       - name: Python dependencies (microWakeWord stack, python 3.10)
         run: |
-          pip install -q "numpy>=2.0" "tensorflow>=2.18" "ai-edge-litert" \
+          pip install -q "numpy>=2.0" "tensorflow==2.18.*" "ai-edge-litert" \
             "datasets==2.21.0" "tensorboard" "scipy" "tqdm" "soundfile" "pyyaml" "mmap_ninja" \
             "audiomentations" "webrtcvad-wheels" "scikit-learn" "requests"
           pip install -q pymicro-features
